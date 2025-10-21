@@ -6,6 +6,6 @@ The folder `6_binning` contains three scripts related to the results of the binn
 
 - **annotation_plot_human.py** — Loads GTDB-Tk annotations and high-quality bin statistics, compares taxonomic diversity across tools, and generates annotation overlap plots.  
 - **count_methods_bins.py** — Counts the number of bins that meet completeness and contamination thresholds for each binning method.  
-- **plot_bins.py** — Plots the number of bins using a stacked bar plot.  
+- **binning_result.py** — Plots the number of bins using a stacked bar plot.  
 
 
