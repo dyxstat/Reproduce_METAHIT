@@ -26,7 +26,6 @@ The folder `9_annotation` contains one script for evaluating the results of the 
 ## 10. MGE Module  
 The folder `10_MGE` contains three scripts for evaluating the results of the MGE module:
 
-- **run_virgo_subset.py** — Runs Virgo per-contig on QC-passed viral contigs linked to selected bins and annotates them by taxonomic order.  
 - **phylum_bin_contact.py** — Counts viral and plasmid contigs contacting bins across the top four phyla.  
 - **phylum_contact_bar.py** — Plots the viral and plasmid contact counts as a stacked bar chart.
 
