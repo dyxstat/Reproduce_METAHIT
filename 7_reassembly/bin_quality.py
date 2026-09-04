@@ -1,105 +1,163 @@
 #!/usr/bin/env python3
-import pandas as pd
-import matplotlib.pyplot as plt
+import os
+from pathlib import Path
+
+os.environ.setdefault("MPLCONFIGDIR", str(Path(__file__).resolve().parent / ".matplotlib"))
+
+import matplotlib
+
+matplotlib.use("Agg")
 import matplotlib as mpl
+import matplotlib.pyplot as plt
+from matplotlib import font_manager
+import pandas as pd
 
-# ---------------------------------------------------------------------
-# Font settings for main figure
-# ---------------------------------------------------------------------
-mpl.rcParams.update({
-    'font.size': 30,
-    'axes.titlesize': 50,
-    'axes.labelsize': 30,
-    'legend.fontsize': 30,
-    'xtick.labelsize': 30,
-    'ytick.labelsize': 30,
-})
+BASE = Path(__file__).resolve().parent
+PROJECT = BASE.parents[1]
+FONT_FAMILY = "Arial"
+FONT_DIR = PROJECT / "conda_envs" / "metahit_env" / "fonts"
+ARIAL_FILES = [FONT_DIR / name for name in ("arial.ttf", "arialbd.ttf", "arialbi.ttf", "ariali.ttf")]
+for font_file in ARIAL_FILES:
+    if not font_file.is_file():
+        raise RuntimeError(f"Arial font file is missing: {font_file}")
+    font_manager.fontManager.addfont(str(font_file))
+font_manager.findfont(FONT_FAMILY, fallback_to_default=False)
 
-# ---------------------------------------------------------------------
-# File paths
-# ---------------------------------------------------------------------
-REFINE_STATS = "metawrap_50_10_bins.stats"
-REASSEMBLY_STATS = "reassembled_bins.stats"
+DATASETS = [
+    {
+        "title": "Human",
+        "before": PROJECT / "hg/6_binning/results/metahit/metahit_50_10_bins.stats",
+        "after": PROJECT / "hg/7_reassembly/results/reassembly_sg_hic/reassembled_bins.stats",
+    },
+    {
+        "title": "Pig",
+        "before": PROJECT / "pig/6_binning/results/metahit/metahit_50_10_bins.stats",
+        "after": PROJECT / "pig/7_reassembly/results/reassembly_sg_hic/reassembled_bins.stats",
+    },
+    {
+        "title": "Bovine",
+        "before": PROJECT / "bovine/6_binning/results/metahit/metahit_50_10_bins.stats",
+        "after": PROJECT / "bovine/7_reassembly/results/reassembly_sg_hic/reassembled_bins.stats",
+    },
+    {
+        "title": "Wastewater",
+        "before": PROJECT / "ww/6_binning/results/metahit/metahit_50_10_bins.stats",
+        "after": PROJECT / "ww/7_reassembly/results/reassembly_sg_hic/reassembled_bins.stats",
+    },
+    {
+        "title": "Mats",
+        "before": PROJECT / "mat/6_binning/results/metahit/metahit_50_10_bins.stats",
+        "after": PROJECT / "mat/7_reassembly/results/reassembly_sg_hic/reassembled_bins.stats",
+    },
+]
 
-# Load and filter
-refine_df = pd.read_csv(REFINE_STATS, sep="\t")
-reassembly_df = pd.read_csv(REASSEMBLY_STATS, sep="\t")
 
-# Filter bins: ≥50% completeness and ≤10% contamination
-refine = refine_df[(refine_df['completeness'] >= 50) & (refine_df['contamination'] <= 10)].copy()
-reassembly = reassembly_df[(reassembly_df['completeness'] >= 50) & (reassembly_df['contamination'] <= 10)].copy()
+mpl.rcParams.update(
+    {
+        "font.family": [FONT_FAMILY],
+        "font.sans-serif": [FONT_FAMILY],
+        "font.size": 12,
+        "axes.titlesize": 20,
+        "axes.labelsize": 12,
+        "legend.fontsize": 15,
+        "xtick.labelsize": 11,
+        "ytick.labelsize": 11,
+        "pdf.fonttype": 42,
+        "ps.fonttype": 42,
+    }
+)
 
-# ------- Top plot: sort by completeness -------
-refine_comp_sorted = refine.sort_values(by='completeness', ascending=False).reset_index(drop=True)
-reassembly_comp_sorted = reassembly.sort_values(by='completeness', ascending=False).reset_index(drop=True)
-min_len_comp = min(len(refine_comp_sorted), len(reassembly_comp_sorted))
-refine_comp_sorted = refine_comp_sorted.iloc[:min_len_comp]
-reassembly_comp_sorted = reassembly_comp_sorted.iloc[:min_len_comp]
+BEFORE_COLOR = "#1f77b4"
+AFTER_COLOR = "#ff7f0e"
 
-# ------- Bottom plot: sort by contamination -------
-refine_cont_sorted = refine.sort_values(by='contamination').reset_index(drop=True)
-reassembly_cont_sorted = reassembly.sort_values(by='contamination').reset_index(drop=True)
-min_len_cont = min(len(refine_cont_sorted), len(reassembly_cont_sorted))
-refine_cont_sorted = refine_cont_sorted.iloc[:min_len_cont]
-reassembly_cont_sorted = reassembly_cont_sorted.iloc[:min_len_cont]
 
-# ------- Plotting main figure -------
-fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(11, 8), sharex=False)
+def load_quality(path):
+    if not path.exists():
+        raise FileNotFoundError(path)
+    df = pd.read_csv(path, sep="\t")
+    required = {"completeness", "contamination"}
+    missing = required - set(df.columns)
+    if missing:
+        raise ValueError(f"{path} is missing columns: {', '.join(sorted(missing))}")
+    return df[(df["completeness"] >= 50) & (df["contamination"] <= 10)].copy()
 
-before_color = '#1f77b4'  # blue
-after_color = '#ff7f0e'   # orange
 
-# Completion curve
-ax1.plot(refine_comp_sorted['completeness'].values, label='Before reassembly', color=before_color)
-ax1.plot(reassembly_comp_sorted['completeness'].values, label='After reassembly', color=after_color)
-ax1.set_ylabel("Completion")
-ax1.set_title("Human")
-ax1.set_ylim(50, 100)
+def matched_sorted_curves(before, after, column, ascending):
+    before_sorted = before.sort_values(column, ascending=ascending).reset_index(drop=True)
+    after_sorted = after.sort_values(column, ascending=ascending).reset_index(drop=True)
+    n = min(len(before_sorted), len(after_sorted))
+    return before_sorted.iloc[:n][column].to_numpy(), after_sorted.iloc[:n][column].to_numpy()
 
-# Contamination curve
-ax2.plot(refine_cont_sorted['contamination'].values, label='Before reassembly', color=before_color)
-ax2.plot(reassembly_cont_sorted['contamination'].values, label='After reassembly', color=after_color)
-ax2.set_ylabel("Contamination")
-ax2.set_ylim(0, 10)
 
-fig.align_ylabels([ax1, ax2])
-ax1.set_position([0.15, 0.55, 0.8, 0.35])
-ax2.set_position([0.15, 0.1, 0.8, 0.35])
+def plot_dataset(fig, outer_spec, dataset, show_ylabel):
+    inner = outer_spec.subgridspec(2, 1, hspace=0.28)
+    ax_comp = fig.add_subplot(inner[0, 0])
+    ax_cont = fig.add_subplot(inner[1, 0])
 
-plt.savefig("bin_quality_human.pdf")
-plt.show()  # <--- show both plots instead of closing
+    before = load_quality(dataset["before"])
+    after = load_quality(dataset["after"])
 
-# ---------------------------------------------------------------------
-# Standalone legend (block style, same as fig3_legend.pdf)
-# ---------------------------------------------------------------------
-def create_bin_quality_legend(output_file="bin_quality_legend.pdf"):
-    import matplotlib.pyplot as plt
+    before_comp, after_comp = matched_sorted_curves(before, after, "completeness", False)
+    before_cont, after_cont = matched_sorted_curves(before, after, "contamination", True)
 
-    plt.rcParams.update({
-        'font.family': 'sans-serif',
-        'font.size': 30,
-        'legend.fontsize': 30
-    })
+    ax_comp.plot(before_comp, color=BEFORE_COLOR, linewidth=1.2)
+    ax_comp.plot(after_comp, color=AFTER_COLOR, linewidth=1.2)
+    ax_comp.set_title(dataset["title"], pad=4)
+    ax_comp.set_ylim(50, 100)
 
-    fig, ax = plt.subplots(figsize=(4, 1))
-    ax.axis('off')
+    ax_cont.plot(before_cont, color=BEFORE_COLOR, linewidth=1.2)
+    ax_cont.plot(after_cont, color=AFTER_COLOR, linewidth=1.2)
+    ax_cont.set_ylim(0, 10)
 
-    before_color = '#1f77b4'  # blue
-    after_color = '#ff7f0e'   # orange
+    if show_ylabel:
+        ax_comp.set_ylabel("Completion", labelpad=4)
+        ax_cont.set_ylabel("Contamination", labelpad=4)
 
-    legend_elements = [
-        plt.Rectangle((0, 0), 1, 1, color=before_color, alpha=0.8, label='Before reassembly'),
-        plt.Rectangle((0, 0), 1, 1, color=after_color, alpha=0.8, label='After reassembly')
+    for ax in (ax_comp, ax_cont):
+        ax.spines["top"].set_color("#999999")
+        ax.spines["right"].set_color("#999999")
+        ax.spines["left"].set_color("#999999")
+        ax.spines["bottom"].set_color("#999999")
+        ax.tick_params(length=3, width=0.8)
+
+
+def main():
+    fig = plt.figure(figsize=(11.5, 7.4), facecolor="white")
+    gs = fig.add_gridspec(
+        2,
+        6,
+        left=0.08,
+        right=0.98,
+        top=0.91,
+        bottom=0.19,
+        wspace=0.40,
+        hspace=0.48,
+    )
+
+    positions = [
+        gs[0, 0:2],
+        gs[0, 2:4],
+        gs[0, 4:6],
+        gs[1, 1:3],
+        gs[1, 3:5],
     ]
 
-    legend = fig.legend(handles=legend_elements, loc='center', ncol=2, 
-                        fontsize=30, frameon=False)
-    legend.get_frame().set_edgecolor('none')
-    legend.get_frame().set_linewidth(0)
+    for i, (dataset, pos) in enumerate(zip(DATASETS, positions)):
+        plot_dataset(fig, pos, dataset, show_ylabel=i in (0, 3))
 
-    plt.savefig(output_file, dpi=300, bbox_inches='tight')
-    print(f"Legend saved as '{output_file}'")
-    plt.close('all')
+    fig.text(0.52, 0.13, "Bin Ranking", ha="center", va="center", fontsize=13)
+    handles = [
+        plt.Rectangle((0, 0), 1, 1, color=BEFORE_COLOR, alpha=0.8, label="Before reassembly"),
+        plt.Rectangle((0, 0), 1, 1, color=AFTER_COLOR, alpha=0.8, label="After reassembly"),
+    ]
+    fig.legend(handles=handles, loc="lower center", ncol=2, frameon=False, bbox_to_anchor=(0.5, 0.04))
 
-# Create the standalone legend
-create_bin_quality_legend()
+    for ext in ("png", "pdf"):
+        fig.savefig(BASE / f"bin_quality.{ext}", dpi=300, bbox_inches="tight", facecolor="white")
+    plt.close(fig)
+    print(f"Wrote {BASE / 'bin_quality.png'}")
+    print(f"Wrote {BASE / 'bin_quality.pdf'}")
+
+
+if __name__ == "__main__":
+    main()

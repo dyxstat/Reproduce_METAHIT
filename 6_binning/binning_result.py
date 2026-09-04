@@ -1,183 +1,247 @@
+#!/usr/bin/env python3
+"""Plot Hi-C binner comparison counts from the seven stored result sets.
+
+All counts are calculated directly from the per-dataset ``results`` statistics
+files.
+"""
+
+from __future__ import annotations
+
+import csv
+import os
+from pathlib import Path
+
+
+SCRIPT_DIR = Path(__file__).resolve().parent
+PROJECT_DIR = SCRIPT_DIR.parents[1]
+os.environ.setdefault("MPLCONFIGDIR", str(SCRIPT_DIR / ".matplotlib"))
+
+import matplotlib.pyplot as plt
+from matplotlib import font_manager
+from matplotlib.ticker import MultipleLocator
 import numpy as np
-import plotly.graph_objects as go
-from plotly.subplots import make_subplots
 
-# Data for bar charts
-methods = ['METAHIT', 'bin3C', 'MetaCC', 'ImputeCC']
+FONT_FAMILY = "Arial"
+FONT_DIR = PROJECT_DIR / "conda_envs" / "metahit_env" / "fonts"
+ARIAL_FILES = [FONT_DIR / name for name in ("arial.ttf", "arialbd.ttf", "arialbi.ttf", "ariali.ttf")]
+for font_file in ARIAL_FILES:
+    if not font_file.is_file():
+        raise RuntimeError(f"Arial font file is missing: {font_file}")
+    font_manager.fontManager.addfont(str(font_file))
+font_manager.findfont(FONT_FAMILY, fallback_to_default=False)
 
-# Group 5 data (blue color scheme)
-greater_90_human_gut_5 = np.array([69, 44, 49, 59])[::-1]  
-greater_70_human_gut_5 = np.array([107, 67, 73, 85])[::-1]  
-greater_50_human_gut_5 = np.array([121, 75, 82, 97])[::-1]  
+METHODS = ["METAHICT", "bin3C", "MetaCC", "ImputeCC"]
+DATASET_ORDER = [
+    ("hg", "Human Gut"),
+    ("sheep", "Sheep Gut"),
+    ("pig", "Pig Gut"),
+    ("cow", "Cow Rumen"),
+    ("bovine", "Bovine Skin"),
+    ("ww", "Wastewater"),
+    ("mat", "Hydrothermal Mats"),
+]
+METHOD_STAT_FILES = [
+    ("METAHICT", "metahit_50_10_bins.stats"),
+    ("bin3C", "work_files/binsC.stats"),
+    ("MetaCC", "work_files/binsA.stats"),
+    ("ImputeCC", "work_files/binsB.stats"),
+]
+RESULTS_DIRECTORIES = {
+    "hg": PROJECT_DIR / "hg" / "6_binning" / "results" / "metahit",
+    "sheep": PROJECT_DIR / "sheep" / "6_binning" / "results" / "metahit",
+    "pig": PROJECT_DIR / "pig" / "6_binning" / "results" / "metahit",
+    "cow": PROJECT_DIR / "cow" / "6_binning" / "results" / "metahit",
+    "bovine": PROJECT_DIR / "bovine" / "6_binning" / "results" / "metahit",
+    "ww": PROJECT_DIR / "ww" / "6_binning" / "results" / "metahit",
+    "mat": PROJECT_DIR / "mat" / "6_binning" / "results" / "metahit",
+}
+COMP_THRESHOLDS = [50, 70, 90]
+CONT_THRESHOLDS = [5, 10]
+BLUE_COLORS = {50: "#C7D2E3", 70: "#8198C0", 90: "#4F74B7"}
+RED_COLORS = {50: "#F0C2C1", 70: "#E3918F", 90: "#DD514A"}
 
-greater_90_pig_gut_5 = np.array([42, 13, 34, 38])[::-1]  
-greater_70_pig_gut_5 = np.array([86, 29, 57, 71])[::-1] 
-greater_50_pig_gut_5 = np.array([108, 37, 68, 92])[::-1]
 
-greater_90_bovine_skin_5 = np.array([37, 20, 34, 35])[::-1]  
-greater_70_bovine_skin_5 = np.array([61, 31, 50, 51])[::-1]  
-greater_50_bovine_skin_5 = np.array([74, 38, 59, 64])[::-1]  
+def tick_interval(max_value: int) -> int:
+    """Return x-axis tick spacing matching the old reference style."""
+    if max_value >= 500:
+        return 200
+    if max_value >= 150:
+        return 50
+    return 20
 
-greater_90_wastewater_5 = np.array([62, 20, 55, 57])[::-1]  
-greater_70_wastewater_5 = np.array([151, 52, 105, 124])[::-1]  
-greater_50_wastewater_5 = np.array([198, 76, 135, 165])[::-1] 
 
-greater_90_mats_5 = np.array([13, 5, 8, 11])[::-1] 
-greater_70_mats_5 = np.array([48, 16, 21, 35])[::-1] 
-greater_50_mats_5 = np.array([88, 29, 38, 69])[::-1] 
+def method_counts(values: list[int]) -> np.ndarray:
+    return np.array(values)
 
-greater_90_sheep_gut_5 = np.array([487, 250, 256, 390])[::-1]  
-greater_70_sheep_gut_5 = np.array([698, 324, 343, 575])[::-1]  
-greater_50_sheep_gut_5 = np.array([834, 365, 394, 700])[::-1]
 
-# Group 10 data (red color scheme)
-greater_90_human_gut_10 = np.array([70, 49, 65, 68])[::-1]  
-greater_70_human_gut_10 = np.array([112, 72, 96, 96])[::-1]  
-greater_50_human_gut_10 = np.array([131, 80, 108, 110])[::-1]  
+def read_stats(path: Path) -> list[dict[str, str]]:
+    if not path.exists():
+        raise FileNotFoundError(f"Missing stats file: {path}")
+    with path.open(newline="") as handle:
+        reader = csv.DictReader(handle, delimiter="\t")
+        fieldnames = reader.fieldnames or []
+        completeness_field = next((name for name in fieldnames if name.lower() == "completeness"), None)
+        contamination_field = next((name for name in fieldnames if name.lower() == "contamination"), None)
+        missing = [
+            label
+            for label, field in (
+                ("completeness", completeness_field),
+                ("contamination", contamination_field),
+            )
+            if field is None
+        ]
+        if missing:
+            raise ValueError(f"{path} is missing required columns: {', '.join(missing)}")
+        return [
+            {
+                "completeness": row[completeness_field],
+                "contamination": row[contamination_field],
+            }
+            for row in reader
+        ]
 
-greater_90_pig_gut_10 = np.array([46, 13, 57, 44])[::-1]  
-greater_70_pig_gut_10 = np.array([94, 31, 88, 80])[::-1]  
-greater_50_pig_gut_10 = np.array([117, 40, 101, 104])[::-1]  
 
-greater_90_bovine_skin_10 = np.array([41, 21, 42, 44])[::-1] 
-greater_70_bovine_skin_10 = np.array([67, 32, 61, 63])[::-1]  
-greater_50_bovine_skin_10 = np.array([80, 39, 70, 76])[::-1]  
+def count_bins(rows: list[dict[str, str]], min_completeness: int, max_contamination: int) -> int:
+    return sum(
+        float(row["completeness"]) >= min_completeness
+        and float(row["contamination"]) < max_contamination
+        for row in rows
+    )
 
-greater_90_wastewater_10 = np.array([81, 28, 78, 79])[::-1]  
-greater_70_wastewater_10 = np.array([185, 65, 146, 162])[::-1]  
-greater_50_wastewater_10 = np.array([238, 91, 182, 209])[::-1]  
 
-greater_90_mats_10 = np.array([21, 6, 19, 24])[::-1] 
-greater_70_mats_10 = np.array([74, 24, 45, 61])[::-1]  
-greater_50_mats_10 = np.array([124, 39, 68, 99])[::-1]
+def dataset_counts(dataset_key: str) -> dict[int, dict[int, np.ndarray]]:
+    """Return threshold counts for one dataset.
 
-greater_90_sheep_gut_10 = np.array([540, 282, 356, 499])[::-1]  
-greater_70_sheep_gut_10 = np.array([771, 360, 466, 736])[::-1] 
-greater_50_sheep_gut_10 = np.array([929, 403, 532, 881])[::-1]  
+    The METAHICT integration script writes its three input binners as:
+    binsA = MetaCC, binsB = ImputeCC, and binsC = bin3C.  The order below is
+    kept consistent with METHODS for plotting: METAHICT, bin3C, MetaCC,
+    ImputeCC.
+    """
+    stats_dir = RESULTS_DIRECTORIES[dataset_key]
+    rows_by_method = [
+        read_stats(stats_dir / relative_path)
+        for method_label, relative_path in METHOD_STAT_FILES
+    ]
+    counts: dict[int, dict[int, np.ndarray]] = {}
+    for cont in CONT_THRESHOLDS:
+        counts[cont] = {}
+        for comp in COMP_THRESHOLDS:
+            values = [count_bins(rows, comp, cont) for rows in rows_by_method]
+            counts[cont][comp] = method_counts(values)
+    return counts
 
-# Create subplots - 6 rows, 2 columns
-fig = make_subplots(
-    rows=6, cols=2,
-    vertical_spacing=0.07,
-    horizontal_spacing=0.14
-)
 
-# Environment labels for y-axis
-environments = ["Human Gut", "Pig Gut", "Bovine Skin", "Wastewater", "Mats", "Sheep Gut"]
-
-# Color schemes
-blue_colors = ['#4F74B7', '#8198C0', '#C7D2E3']
-red_colors = ['#DD514A', '#E3918F', '#F0C2C1']
-
-# Group 5 data (left column)
-group5_data = [
-    (greater_90_human_gut_5, greater_70_human_gut_5, greater_50_human_gut_5),
-    (greater_90_pig_gut_5, greater_70_pig_gut_5, greater_50_pig_gut_5),
-    (greater_90_bovine_skin_5, greater_70_bovine_skin_5, greater_50_bovine_skin_5),
-    (greater_90_wastewater_5, greater_70_wastewater_5, greater_50_wastewater_5),
-    (greater_90_mats_5, greater_70_mats_5, greater_50_mats_5),
-    (greater_90_sheep_gut_5, greater_70_sheep_gut_5, greater_50_sheep_gut_5)
+DATASETS = [
+    (dataset_label, dataset_counts(dataset_key))
+    for dataset_key, dataset_label in DATASET_ORDER
 ]
 
-# Group 10 data (right column)
-group10_data = [
-    (greater_90_human_gut_10, greater_70_human_gut_10, greater_50_human_gut_10),
-    (greater_90_pig_gut_10, greater_70_pig_gut_10, greater_50_pig_gut_10),
-    (greater_90_bovine_skin_10, greater_70_bovine_skin_10, greater_50_bovine_skin_10),
-    (greater_90_wastewater_10, greater_70_wastewater_10, greater_50_wastewater_10),
-    (greater_90_mats_10, greater_70_mats_10, greater_50_mats_10),
-    (greater_90_sheep_gut_10, greater_70_sheep_gut_10, greater_50_sheep_gut_10)
-]
 
-# Add Group 5 plots (left column - blue)
-for i, (data_90, data_70, data_50) in enumerate(group5_data):
-    row = i + 1
-    show_legend = (i == 0)
-    
-    fig.add_trace(
-        go.Bar(y=methods[::-1], x=data_50, orientation='h', name="Comp ≥ 50%", 
-               marker_color=blue_colors[2], showlegend=show_legend, 
-               legendgroup="group1", legendgrouptitle_text="Cont < 5%"),
-        row=row, col=1
-    )
-    fig.add_trace(
-        go.Bar(y=methods[::-1], x=data_70, orientation='h', name="Comp ≥ 70%", 
-               marker_color=blue_colors[1], showlegend=show_legend, 
-               legendgroup="group1"),
-        row=row, col=1
-    )
-    fig.add_trace(
-        go.Bar(y=methods[::-1], x=data_90, orientation='h', name="Comp ≥ 90%", 
-               marker_color=blue_colors[0], showlegend=show_legend, 
-               legendgroup="group1"),
-        row=row, col=1
-    )
+def write_label_map(path: Path) -> None:
+    with path.open("w") as handle:
+        for idx, (dataset_label, _data) in enumerate(DATASETS):
+            handle.write(f"{chr(ord('A') + idx)}: {dataset_label}\n")
 
-# Add Group 10 plots (right column - red)
-for i, (data_90, data_70, data_50) in enumerate(group10_data):
-    row = i + 1
-    show_legend = (i == 0)
-    
-    fig.add_trace(
-        go.Bar(y=methods[::-1], x=data_50, orientation='h', name="Comp ≥ 50%", 
-               marker_color=red_colors[2], showlegend=show_legend, 
-               legendgroup="group2", legendgrouptitle_text="Cont < 10%"),
-        row=row, col=2
-    )
-    fig.add_trace(
-        go.Bar(y=methods[::-1], x=data_70, orientation='h', name="Comp ≥ 70%", 
-               marker_color=red_colors[1], showlegend=show_legend, 
-               legendgroup="group2"),
-        row=row, col=2
-    )
-    fig.add_trace(
-        go.Bar(y=methods[::-1], x=data_90, orientation='h', name="Comp ≥ 90%", 
-               marker_color=red_colors[0], showlegend=show_legend, 
-               legendgroup="group2"),
-        row=row, col=2
-    )
 
-fig.update_layout(
-    font=dict(family="Arial"),
-    height=2000, width=1400,
-    barmode='overlay', 
-    margin=dict(l=200, r=200, t=50, b=100),
-    template="simple_white",
-    legend=dict(
-        orientation="h",
-        font=dict(size=25, family="Arial"),
-        x=0.5,
-        y=-0.05,
-        xanchor="center",
-        yanchor="top",
-        grouptitlefont=dict(size=30, family="Arial")
+def plot() -> None:
+    plt.rcParams["font.family"] = FONT_FAMILY
+    fig, axes = plt.subplots(nrows=len(DATASETS), ncols=2, figsize=(14, 22), sharey=True)
+
+    y = np.arange(len(METHODS))
+    method_labels = METHODS
+
+    for row_idx, (_dataset_label, data) in enumerate(DATASETS):
+        for col_idx, cont in enumerate(CONT_THRESHOLDS):
+            ax = axes[row_idx, col_idx]
+            colors = BLUE_COLORS if cont == 5 else RED_COLORS
+            # Match the reference Plotly figure more closely: each subplot
+            # should autoscale from its own values.  The previous matplotlib
+            # version used the larger of the two columns in the row plus 12%
+            # padding, which stretched the left HG panel to a 140 tick.
+            col_max = int(data[cont][50].max())
+            x_max = max(1, col_max * 1.03)
+            tick_step = tick_interval(col_max)
+
+            for comp in [50, 70, 90]:
+                ax.barh(
+                    y,
+                    data[cont][comp],
+                    height=0.68,
+                    color=colors[comp],
+                    edgecolor="white",
+                    linewidth=0.7,
+                    label=f"Comp ≥ {comp}%",
+                    zorder=comp,
+                )
+
+            ax.set_xlim(0, x_max)
+            ax.xaxis.set_major_locator(MultipleLocator(tick_step))
+            ax.set_yticks(y)
+            ax.set_yticklabels(method_labels, fontsize=13)
+            ax.set_ylim(len(METHODS) - 0.5, -0.5)
+            ax.set_xlabel("Number of bins", fontsize=13)
+            ax.tick_params(axis="x", labelsize=12)
+            ax.grid(axis="x", color="#E2E2E2", linewidth=0.8)
+            ax.set_axisbelow(True)
+            ax.spines["top"].set_visible(False)
+            ax.spines["right"].set_visible(False)
+
+            if col_idx == 0:
+                ax.text(
+                    -0.28,
+                    -0.16,
+                    chr(ord("A") + row_idx),
+                    transform=ax.get_yaxis_transform(),
+                    fontsize=34,
+                    fontfamily=FONT_FAMILY,
+                    fontweight="normal",
+                    va="top",
+                    ha="right",
+                )
+
+    fig.subplots_adjust(left=0.24, right=0.98, top=0.965, bottom=0.065, hspace=0.56, wspace=0.22)
+    left_bbox = axes[0, 0].get_position()
+    right_bbox = axes[0, 1].get_position()
+    left_legend_x = (left_bbox.x0 + left_bbox.x1) / 2
+    right_legend_x = (right_bbox.x0 + right_bbox.x1) / 2
+
+    handles_left, labels_left = axes[0, 0].get_legend_handles_labels()
+    handles_right, labels_right = axes[0, 1].get_legend_handles_labels()
+    fig.legend(
+        handles_left,
+        labels_left,
+        title="Cont < 5%",
+        loc="lower center",
+        bbox_to_anchor=(left_legend_x, 0.011),
+        ncol=3,
+        frameon=False,
+        fontsize=12,
+        title_fontsize=14,
     )
-)
-
-# Update axes for all subplots
-for row in range(1, 7):
-    for col in [1, 2]:
-        fig.update_xaxes(title=dict(text="Number of bins", font=dict(size=25, family="Arial")), row=row, col=col)
-        fig.update_xaxes(tickfont=dict(size=25, family="Arial"), row=row, col=col)
-        fig.update_yaxes(tickfont=dict(size=25, family="Arial"), row=row, col=col)
-
-# Add environment labels (A, B, C, D, E, F) on the left
-letters = ["A", "B", "C", "D", "E", "F"]
-for i, letter in enumerate(letters):
-    if i == 0:
-        yref = "y domain"
-    else:
-        yref = f"y{2*i+1} domain"
-    
-    fig.add_annotation(
-        font=dict(size=45, family="Arial"),
-        x=-0.15, y=0.95,
-        xref="paper", yref=yref,
-        text=letter,
-        showarrow=False,
-        textangle=0,  # Horizontal text
-        xanchor="right",
-        yanchor="top"
+    fig.legend(
+        handles_right,
+        labels_right,
+        title="Cont < 10%",
+        loc="lower center",
+        bbox_to_anchor=(right_legend_x, 0.011),
+        ncol=3,
+        frameon=False,
+        fontsize=12,
+        title_fontsize=14,
     )
 
-fig.write_image("binning_result.pdf")
+    fig.savefig(SCRIPT_DIR / "binning_result.pdf", format="pdf", bbox_inches="tight")
+    fig.savefig(SCRIPT_DIR / "binning_results.png", format="png", dpi=200, bbox_inches="tight")
+    plt.close(fig)
+
+
+def main() -> None:
+    write_label_map(SCRIPT_DIR / "binning_results.txt")
+    plot()
+    print(f"Wrote {SCRIPT_DIR / 'binning_result.pdf'}")
+    print(f"Wrote {SCRIPT_DIR / 'binning_results.png'}")
+    print(f"Wrote {SCRIPT_DIR / 'binning_results.txt'}")
+
+
+if __name__ == "__main__":
+    main()
